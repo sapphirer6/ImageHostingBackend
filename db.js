@@ -1,8 +1,20 @@
 const { Pool } = require('pg');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+const dbUrl = process.env.DATABASE_URL;
+console.log('DATABASE_URL set:', !!dbUrl);
+
+const poolConfig = { connectionString: dbUrl };
+
+// Only enable SSL if the connection string indicates it's needed (external/public URL)
+// Railway's internal private networking doesn't require SSL
+if (dbUrl && dbUrl.includes('sslmode=require')) {
+  poolConfig.ssl = { rejectUnauthorized: false };
+}
+
+const pool = new Pool(poolConfig);
+
+pool.on('error', (err) => {
+  console.error('Unexpected pool error:', err);
 });
 
 async function initDb() {

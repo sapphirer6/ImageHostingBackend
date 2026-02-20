@@ -56,7 +56,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // --- Image serving ---
-app.get('/i/:id', async (req, res) => {
+app.get('/i/:id/:filename?', async (req, res) => {
   try {
     const image = await getImage(req.params.id);
     if (!image) return res.status(404).send('Not found');
@@ -89,7 +89,8 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     const id = req.imageId;
     await addImage(id, req.file.originalname, req.file.mimetype, req.file.size);
 
-    res.json({ id, url: `/i/${id}` });
+    const originalName = encodeURIComponent(req.file.originalname);
+    res.json({ id, url: `/i/${id}/${originalName}` });
   } catch (err) {
     res.status(500).json({ error: 'Upload failed' });
   }
@@ -141,7 +142,13 @@ app.put('/api/settings', async (req, res) => {
   }
 });
 
+// Health check that doesn't hit the DB
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
+
 initDb().then(() => {
+  console.log('Database initialized successfully');
   app.listen(PORT, () => {
     console.log(`Image hosting API running on http://localhost:${PORT}`);
   });
