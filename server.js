@@ -14,7 +14,9 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR);
 }
 
-app.use(cors());
+app.use(cors({
+  origin: 'https://image-hosting-two.vercel.app'
+}));
 app.use(express.json());
 
 // Trust proxy for Cloudflare
