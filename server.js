@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const { getSetting, setSetting, getAllSettings, addImage, getImage, getAllImages, deleteImage } = require('./db');
+const { initDb, getSetting, setSetting, getAllSettings, addImage, getImage, getAllImages, deleteImage } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,22 +23,24 @@ app.use(express.json());
 app.set('trust proxy', true);
 
 // --- Blocking middleware ---
-app.use((req, res, next) => {
-  // IP block
-  const blockedIps = JSON.parse(getSetting('blocked_ips') || '[]');
-  const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.ip;
-  if (blockedIps.some(ip => clientIp.includes(ip))) {
-    return res.status(403).send('Forbidden');
-  }
+app.use(async (req, res, next) => {
+  try {
+    const blockedIps = JSON.parse(await getSetting('blocked_ips') || '[]');
+    const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.ip;
+    if (blockedIps.some(ip => clientIp.includes(ip))) {
+      return res.status(403).send('Forbidden');
+    }
 
-  // UA block
-  const blockedUas = JSON.parse(getSetting('blocked_uas') || '[]');
-  const ua = req.headers['user-agent'] || '';
-  if (blockedUas.some(blocked => ua.toLowerCase().includes(blocked.toLowerCase()))) {
-    return res.status(403).send('Forbidden');
-  }
+    const blockedUas = JSON.parse(await getSetting('blocked_uas') || '[]');
+    const ua = req.headers['user-agent'] || '';
+    if (blockedUas.some(blocked => ua.toLowerCase().includes(blocked.toLowerCase()))) {
+      return res.status(403).send('Forbidden');
+    }
 
-  next();
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 // --- Multer setup (no limits, no transforms) ---
@@ -54,67 +56,96 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // --- Image serving ---
-app.get('/i/:id', (req, res) => {
-  const image = getImage(req.params.id);
-  if (!image) return res.status(404).send('Not found');
+app.get('/i/:id', async (req, res) => {
+  try {
+    const image = await getImage(req.params.id);
+    if (!image) return res.status(404).send('Not found');
 
-  const ext = path.extname(image.original_name);
-  const filePath = path.join(UPLOADS_DIR, image.id + ext);
+    const ext = path.extname(image.original_name);
+    const filePath = path.join(UPLOADS_DIR, image.id + ext);
 
-  if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
+    if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
 
-  res.setHeader('Content-Type', image.mime_type);
-  res.setHeader('Cache-Control', 'public, max-age=31536000');
+    res.setHeader('Content-Type', image.mime_type);
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
 
-  const sendContentLength = getSetting('send_content_length') === 'true';
-  if (sendContentLength) {
-    res.setHeader('Content-Length', image.size);
+    const sendContentLength = (await getSetting('send_content_length')) === 'true';
+    if (sendContentLength) {
+      res.setHeader('Content-Length', image.size);
+    }
+
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+  } catch (err) {
+    res.status(500).send('Internal server error');
   }
-
-  const stream = fs.createReadStream(filePath);
-  stream.pipe(res);
 });
 
 // --- API: Upload ---
-app.post('/api/upload', upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-  const id = req.imageId;
-  addImage(id, req.file.originalname, req.file.mimetype, req.file.size);
+    const id = req.imageId;
+    await addImage(id, req.file.originalname, req.file.mimetype, req.file.size);
 
-  res.json({ id, url: `/i/${id}` });
+    res.json({ id, url: `/i/${id}` });
+  } catch (err) {
+    res.status(500).json({ error: 'Upload failed' });
+  }
 });
 
 // --- API: List images ---
-app.get('/api/images', (req, res) => {
-  res.json(getAllImages());
+app.get('/api/images', async (req, res) => {
+  try {
+    res.json(await getAllImages());
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch images' });
+  }
 });
 
 // --- API: Delete image ---
-app.delete('/api/images/:id', (req, res) => {
-  const image = getImage(req.params.id);
-  if (!image) return res.status(404).json({ error: 'Not found' });
+app.delete('/api/images/:id', async (req, res) => {
+  try {
+    const image = await getImage(req.params.id);
+    if (!image) return res.status(404).json({ error: 'Not found' });
 
-  const ext = path.extname(image.original_name);
-  const filePath = path.join(UPLOADS_DIR, image.id + ext);
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    const ext = path.extname(image.original_name);
+    const filePath = path.join(UPLOADS_DIR, image.id + ext);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-  deleteImage(req.params.id);
-  res.json({ ok: true });
+    await deleteImage(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Delete failed' });
+  }
 });
 
 // --- API: Settings ---
-app.get('/api/settings', (req, res) => {
-  res.json(getAllSettings());
+app.get('/api/settings', async (req, res) => {
+  try {
+    res.json(await getAllSettings());
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
 });
 
-app.put('/api/settings', (req, res) => {
-  const { key, value } = req.body;
-  if (!key) return res.status(400).json({ error: 'Missing key' });
-  setSetting(key, value);
-  res.json({ ok: true });
+app.put('/api/settings', async (req, res) => {
+  try {
+    const { key, value } = req.body;
+    if (!key) return res.status(400).json({ error: 'Missing key' });
+    await setSetting(key, value);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update setting' });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`Image hosting API running on http://localhost:${PORT}`);
+initDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Image hosting API running on http://localhost:${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
 });
